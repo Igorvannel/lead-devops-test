@@ -40,11 +40,11 @@ COPY --from=builder /workspace/target/extracted/snapshot-dependencies/ ./
 COPY --from=builder /workspace/target/extracted/application/ ./
 
 # Expose application port
-EXPOSE 8080
+EXPOSE 8090
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD wget -qO- http://localhost:8080/actuator/health || exit 1
+  CMD wget -qO- http://localhost:8090/actuator/health || exit 1
 
 # JVM tuning for containers
 ENV JAVA_OPTS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -Djava.security.egd=file:/dev/./urandom"

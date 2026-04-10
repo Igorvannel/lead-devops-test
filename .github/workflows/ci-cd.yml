@@ -9,7 +9,7 @@ on:
 env:
   DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/afric-hello-world
   CONTAINER_NAME: afric-hello-world
-  APP_PORT: 8080
+  APP_PORT: 8090
 
 jobs:
   # ============================================================
@@ -180,7 +180,7 @@ jobs:
             docker run -d \
               --name ${{ env.CONTAINER_NAME }} \
               --restart unless-stopped \
-              -p ${{ env.APP_PORT }}:8080 \
+              -p ${{ env.APP_PORT }}:8090 \
               -e APP_ENV=production \
               -e SPRING_PROFILES_ACTIVE=prod \
               --memory="512m" \
@@ -242,7 +242,7 @@ jobs:
           **Commit:** \`${{ github.sha }}\`
           **Branch:** \`${{ github.ref_name }}\`
           **Triggered by:** @${{ github.actor }}
-          **Application URL:** http://192.99.42.107:8080/api/hello
+          **Application URL:** http://192.99.42.107:8090/api/hello
           EOF
 
       - name: Send Slack/Webhook notification
@@ -258,7 +258,7 @@ jobs:
                 "fields": [
                   {"title": "Commit", "value": "${{ github.sha }}", "short": true},
                   {"title": "Actor", "value": "${{ github.actor }}", "short": true},
-                  {"title": "URL", "value": "http://192.99.42.107:8080/api/hello", "short": false}
+                  {"title": "URL", "value": "http://192.99.42.107:8090/api/hello", "short": false}
                 ]
               }]
             }'
