@@ -246,8 +246,9 @@ jobs:
           EOF
 
       - name: Send Slack/Webhook notification
-        if: ${{ secrets.WEBHOOK_URL != '' }}
+        if: always()
         run: |
+          [ -z "${{ secrets.WEBHOOK_URL }}" ] && echo "No webhook configured, skipping." && exit 0
           curl -s -X POST "${{ secrets.WEBHOOK_URL }}" \
             -H "Content-Type: application/json" \
             -d '{
