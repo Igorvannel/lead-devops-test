@@ -1,0 +1,263 @@
+name: CI/CD – Zero-to-Deploy (@fric Lead DevOps)
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+env:
+  DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/afric-hello-world
+  CONTAINER_NAME: afric-hello-world
+  APP_PORT: 8080
+
+jobs:
+  # ============================================================
+  # JOB 1 — Build & Unit Tests
+  # ============================================================
+  build-and-test:
+    name: 🔨 Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Required for SonarCloud blame information
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Make mvnw executable
+        run: chmod +x mvnw
+
+      - name: Build and run unit tests
+        run: ./mvnw verify -B
+
+      - name: Upload test reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-reports
+          path: target/surefire-reports/
+          retention-days: 7
+
+      - name: Upload JaCoCo coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-report
+          path: target/site/jacoco/
+          retention-days: 7
+
+  # ============================================================
+  # JOB 2 — SonarCloud Code Quality Analysis
+  # ============================================================
+  sonar-analysis:
+    name: 🔍 SonarCloud Analysis
+    runs-on: ubuntu-latest
+    needs: build-and-test
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Make mvnw executable
+        run: chmod +x mvnw
+
+      - name: Run SonarCloud scan
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          ./mvnw verify sonar:sonar \
+            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }} \
+            -Dsonar.organization=${{ secrets.SONAR_ORGANIZATION }} \
+            -Dsonar.host.url=https://sonarcloud.io \
+            -B
+
+  # ============================================================
+  # JOB 3 — Docker Build & Push to Docker Hub
+  # ============================================================
+  docker-build-push:
+    name: 🐳 Docker Build & Push
+    runs-on: ubuntu-latest
+    needs: sonar-analysis
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build-push.outputs.digest }}
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract Docker metadata (tags & labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_IMAGE }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-,format=short
+            type=ref,event=branch
+
+      - name: Build and push Docker image
+        id: build-push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+      - name: Image digest summary
+        run: echo "✅ Image pushed → ${{ env.DOCKER_IMAGE }}:latest | digest=${{ steps.build-push.outputs.digest }}"
+
+  # ============================================================
+  # JOB 4 — Deploy to VPS via SSH
+  # ============================================================
+  deploy:
+    name: 🚀 Deploy to VPS
+    runs-on: ubuntu-latest
+    needs: docker-build-push
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+    environment:
+      name: production
+      url: http://192.99.42.107:${{ env.APP_PORT }}
+
+    steps:
+      - name: Deploy to VPS via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          port: 22
+          script: |
+            set -e
+
+            echo "=== [@fric Deploy] Starting deployment at $(date) ==="
+
+            # Pull latest image from Docker Hub
+            echo "--- Pulling image: ${{ env.DOCKER_IMAGE }}:latest ---"
+            docker pull ${{ env.DOCKER_IMAGE }}:latest
+
+            # Stop and remove existing container if running
+            if docker ps -a --format '{{.Names}}' | grep -q "^${{ env.CONTAINER_NAME }}$"; then
+              echo "--- Stopping and removing old container ---"
+              docker stop ${{ env.CONTAINER_NAME }} || true
+              docker rm   ${{ env.CONTAINER_NAME }} || true
+            fi
+
+            # Launch new container
+            echo "--- Starting new container ---"
+            docker run -d \
+              --name ${{ env.CONTAINER_NAME }} \
+              --restart unless-stopped \
+              -p ${{ env.APP_PORT }}:8080 \
+              -e APP_ENV=production \
+              -e SPRING_PROFILES_ACTIVE=prod \
+              --memory="512m" \
+              --cpus="0.5" \
+              ${{ env.DOCKER_IMAGE }}:latest
+
+            # Wait for health check
+            echo "--- Waiting for application to be healthy ---"
+            for i in $(seq 1 12); do
+              STATUS=$(docker inspect --format='{{.State.Health.Status}}' ${{ env.CONTAINER_NAME }} 2>/dev/null || echo "starting")
+              echo "  Health status ($i/12): $STATUS"
+              if [ "$STATUS" = "healthy" ]; then
+                echo "✅ Container is healthy!"
+                break
+              fi
+              sleep 5
+            done
+
+            # Cleanup dangling images
+            docker image prune -f
+
+            echo "=== [@fric Deploy] Deployment completed successfully at $(date) ==="
+
+  # ============================================================
+  # JOB 5 — Post-Deploy Notification
+  # ============================================================
+  notify:
+    name: 📣 Notify
+    runs-on: ubuntu-latest
+    needs: [ build-and-test, sonar-analysis, docker-build-push, deploy ]
+    if: always()
+
+    steps:
+      - name: Determine pipeline status
+        id: status
+        run: |
+          if [[ "${{ needs.deploy.result }}" == "success" ]]; then
+            echo "emoji=✅" >> $GITHUB_OUTPUT
+            echo "result=SUCCESS" >> $GITHUB_OUTPUT
+            echo "color=good" >> $GITHUB_OUTPUT
+          else
+            echo "emoji=❌" >> $GITHUB_OUTPUT
+            echo "result=FAILURE" >> $GITHUB_OUTPUT
+            echo "color=danger" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Write deployment summary to GitHub
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          # ${{ steps.status.outputs.emoji }} Pipeline Report — @fric Zero-to-Deploy
+
+          | Step             | Status                          |
+          |------------------|---------------------------------|
+          | Build & Test     | ${{ needs.build-and-test.result }}   |
+          | SonarCloud       | ${{ needs.sonar-analysis.result }}   |
+          | Docker Push      | ${{ needs.docker-build-push.result }}|
+          | Deploy to VPS    | ${{ needs.deploy.result }}           |
+
+          **Commit:** \`${{ github.sha }}\`
+          **Branch:** \`${{ github.ref_name }}\`
+          **Triggered by:** @${{ github.actor }}
+          **Application URL:** http://192.99.42.107:8080/api/hello
+          EOF
+
+      - name: Send Slack/Webhook notification
+        if: ${{ secrets.WEBHOOK_URL != '' }}
+        run: |
+          curl -s -X POST "${{ secrets.WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "text": "${{ steps.status.outputs.emoji }} *[@fric DevOps]* Pipeline *${{ steps.status.outputs.result }}* on branch `${{ github.ref_name }}`",
+              "attachments": [{
+                "color": "${{ steps.status.outputs.color }}",
+                "fields": [
+                  {"title": "Commit", "value": "${{ github.sha }}", "short": true},
+                  {"title": "Actor", "value": "${{ github.actor }}", "short": true},
+                  {"title": "URL", "value": "http://192.99.42.107:8080/api/hello", "short": false}
+                ]
+              }]
+            }'
