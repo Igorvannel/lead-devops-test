@@ -22,7 +22,7 @@ public class HelloController {
     @GetMapping("/hello")
     public Map<String, String> hello() {
         return Map.of(
-                "message", "Hello from @fric Payment Solutions!",
+                "message", "Hello from @PS",
                 "environment", environment,
                 "version", version,
                 "timestamp", LocalDateTime.now().toString()
