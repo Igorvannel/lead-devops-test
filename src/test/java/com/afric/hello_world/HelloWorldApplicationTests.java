@@ -22,7 +22,7 @@ class HelloWorldApplicationTests {
 		mockMvc.perform(get("/api/hello")
 						.accept(MediaType.APPLICATION_JSON))
 				.andExpect(status().isOk())
-				.andExpect(jsonPath("$.message").value("Hello from @fric Payment Solutions!"))
+				.andExpect(jsonPath("$.message").value("Hello from @PS"))
 				.andExpect(jsonPath("$.version").exists())
 				.andExpect(jsonPath("$.timestamp").exists());
 	}
